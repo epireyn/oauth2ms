@@ -33,6 +33,8 @@ import atexit
 import base64
 import gnupg
 import io
+from pathlib import Path
+import ssl
 
 pp = pprint.PrettyPrinter(indent=4)
 
@@ -129,13 +131,22 @@ def build_new_app_state(crypt):
     if redirect_path != "/" and redirect_path[-1] == "/":
         redirect_path = redirect_path[:-1]
 
-    config["redirect_uri"] = "http://" + config['redirect_host'] + ":" + config['redirect_port'] + redirect_path
+    config["redirect_uri"] = "https://" + config['redirect_host'] + ":" + config['redirect_port'] + redirect_path
     auth_url = get_auth_url(config, cache, state)
     wsgi_app = WSGIRedirectionApp(SUCCESS_MESSAGE)
     http_server = simple_server.make_server(config['redirect_host'],
                                             int(config['redirect_port']),
-                                            wsgi_app,
-                                            handler_class=WSGIRequestHandler)
+                                            wsgi_app)
+    root = Path(__file__).parent
+    keyf, certf = root / "server.key", root / "server.cert"
+
+    assert keyf.exists() and certf.exists()
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certf, keyf)
+    http_server.socket = context.wrap_socket(
+        http_server.socket,
+        server_side=True,
+    )
     if cmdline_args.no_browser:
         print("Please navigate to this url: " + auth_url)
     else:
@@ -145,9 +156,10 @@ def build_new_app_state(crypt):
 
     auth_response = wsgi_app.last_request_uri
     http_server.server_close()
+
     parsed_auth_response = parse_qs(auth_response)
 
-    code_key = config["redirect_uri"] + "?code"
+    code_key = config["redirect_uri"].replace("https", "http") + "?code"
     if code_key not in parsed_auth_response:
         return None
 
